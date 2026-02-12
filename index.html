@@ -255,6 +255,41 @@
   .banReasonText{font-size:14px;color:#fff;white-space:pre-wrap}
   .banBtn{margin-top:6px;border:none;border-radius:18px;background:#ffffff;color:#000;font-weight:900;padding:12px 18px;cursor:pointer;min-width:200px;}
 
+
+/* Top action buttons on map */
+#topActions{position:absolute;top:14px;left:14px;z-index:1200;display:flex;gap:10px;align-items:center}
+.topBtn{width:44px;height:44px;border-radius:12px;border:1px solid rgba(0,0,0,.15);background:#fff;color:#111;
+  font-weight:1000;font-size:26px;line-height:44px;text-align:center;cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.20)}
+.topBtn.smallText{width:auto;padding:0 14px;font-size:14px}
+
+.topBtn.active{outline:3px solid rgba(0,140,255,.55); box-shadow:0 10px 30px rgba(0,0,0,.25), 0 0 0 3px rgba(0,140,255,.25) inset;}
+#drawHud{position:absolute;top:68px;left:14px;z-index:1200;display:none;gap:8px;align-items:center;background:rgba(255,255,255,.92);
+  border-radius:14px;border:1px solid rgba(0,0,0,.12);padding:10px 10px;box-shadow:0 10px 30px rgba(0,0,0,.20)}
+#drawHud .mini{height:34px;border-radius:12px;border:1px solid rgba(0,0,0,.15);background:#fff;color:#111;font-weight:900;padding:0 10px;cursor:pointer}
+#drawHud .swatch{width:34px;height:34px;border-radius:12px;border:1px solid rgba(0,0,0,.15);cursor:pointer}
+
+.topBtn.active{background:#e8f0ff;border-color:rgba(0,60,255,.35)}
+/* Hide/show left panel */
+body.panelHidden #sidebar{transform:translateX(-110%);pointer-events:none}
+body.panelHidden #mapWrap{margin-left:0}
+#sidebar{transition:transform .22s ease}
+/* Target action menu */
+#targetMenu{position:absolute;z-index:1300;min-width:240px;max-width:280px;
+  background:rgba(25,25,25,.92);backdrop-filter: blur(10px);
+  border:1px solid rgba(255,255,255,.10);border-radius:16px;box-shadow:0 18px 60px rgba(0,0,0,.50);
+  padding:12px;display:none;color:#fff}
+#targetMenu .title{font-weight:1000;margin-bottom:8px}
+#targetMenu .btnRow{display:flex;gap:8px;flex-wrap:wrap}
+#targetMenu button{cursor:pointer;border:none;border-radius:12px;padding:10px 10px;font-weight:800;
+  background:rgba(255,255,255,.10);color:#fff}
+#targetMenu button:hover{background:rgba(255,255,255,.16)}
+#targetMenu button.danger{background:rgba(255,75,75,.18)}
+#targetMenu button.danger:hover{background:rgba(255,75,75,.28)}
+#targetMenu .mini{font-size:12px;opacity:.85;margin:6px 0 10px}
+#targetMenu .sep{height:1px;background:rgba(255,255,255,.12);margin:10px 0}
+#toast{position:absolute;z-index:1400;left:50%;top:14px;transform:translateX(-50%);
+  background:rgba(0,0,0,.72);color:#fff;padding:10px 14px;border-radius:14px;display:none;font-weight:800}
+
 </style>
 
 <style id="authStyle">
@@ -858,7 +893,21 @@
   <main id="mapWrap">
     <div id="map"></div>
     <canvas id="watermark"></canvas>
-    <div id="crosshair"></div>
+    
+    <div id="topActions">
+      <button id="btnTopAdd" class="topBtn" title="Додати ціль">+</button>
+      <button id="btnTopDraw" class="topBtn" title="Малювати по клікам">✏</button>
+      <button id="btnTogglePanel" class="topBtn smallText" title="Показати/сховати панель">Панель</button>
+    </div>
+    <div id="drawHud">
+      <button id="btnDrawFinish" class="mini" title="Завершити лінію">✓ Готово</button>
+      <button id="btnDrawUndo" class="mini" title="Скасувати останню точку">↩</button>
+      <button id="btnDrawClear" class="mini" title="Очистити всі лінії">🧹</button>
+      <div id="drawColor" class="swatch" title="Змінити колір"></div>
+    </div>
+    <div id="toast"></div>
+    <div id="targetMenu"></div>
+<div id="crosshair"></div>
     <div id="announce"></div>
     <div id="fps" class="mono">FPS: --</div>
   </main>
@@ -911,6 +960,10 @@ const state = {
   hideThreats:false,
   showAnnounce:false,
   announceText:"",
+
+  // drawing
+  drawMode:false,
+  drawColorIndex:0,
   showTurnPoints:false,
   glow:false,
   dynSize:true,
@@ -972,6 +1025,16 @@ const state = {
   frontLineColor:"#ff4d4d",
   frontFillColor:"#ff4d4d",
 };
+
+function toast(msg){
+  const el = $("toast");
+  if(!el) return;
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>{ el.style.display="none"; }, 2200);
+}
+
 
 let data = {
   targets: [],  // {id, owner: mine|foreign, type, status, name, count, speed, rangeKm, heading, threatRadius, threatAngle, lat,lng, createdAt, paused, points:[{lat,lng}], trajectory:[{lat,lng,t}]}
@@ -1824,7 +1887,7 @@ function addTargetLayers(t){
     renderList();
   });
 
-  marker.on("click", () => openTargetMenu(t));
+  marker.on("click", (ev) => openTargetMenu(t, ev));
 
   refreshTarget(t);
 }
@@ -1907,54 +1970,118 @@ function refreshTarget(t){
 }
 
 // --- Context menu (simple modal-like prompt) ---
-function openTargetMenu(t){
-  // On iOS prompt is easiest + reliable.
-  // Actions: pause/resume, edit, set direction, teleport, add turn point, clone, delete
-  const pausedLabel = t.paused ? "▶️ Зняти з паузи" : "⏸ Поставити на паузу";
-  const choice = prompt(
-`Дія для цілі:
-1) ${pausedLabel}
-2) ✏️ Редагувати
-3) ➡️ Встановити новий напрямок (клік по мапі)
-4) 📍 Додати точку повороту (клік по мапі)
-5) 🌀 Телепорт (час/відстань)
-6) 🧬 Клонувати
-7) 🗑 Видалити
 
-Введи номер (1-7):`
-  );
-  if(!choice) return;
-  const n = Number(choice);
-  if(n===1){
-    t.paused = !t.paused;
-    save(); renderList(); refreshTarget(t);
-    return;
-  }
-  if(n===2){
-    editTarget(t);
-    return;
-  }
-  if(n===3){
-    startSetDirection(t);
-    return;
-  }
-  if(n===4){
-    startAddTurnPoint(t);
-    return;
-  }
-  if(n===5){
-    teleportTarget(t);
-    return;
-  }
-  if(n===6){
-    cloneTarget(t);
-    return;
-  }
-  if(n===7){
-    deleteTarget(t);
-    return;
-  }
+function openTargetMenu(t, ev){
+  // Build and show a small clickable menu near the cursor
+  const menu = $("targetMenu");
+  const title = (t.name?.trim() ? t.name.trim() : t.type);
+  menu.innerHTML = `
+    <div class="title">${escapeHtml(title)}</div>
+    <div class="mini">${escapeHtml(t.type)} • ${statusText(t.status)} • ${t.heading ?? 0}° • ${t.speed ?? 0} км/год</div>
+    <div class="btnRow">
+      <button data-act="speed">Швидкість</button>
+      <button data-act="edit">Редагувати</button>
+      <button data-act="dir">Новий напрямок</button>
+      <button data-act="turn">Точка повороту</button>
+      <button data-act="tp">Телепорт</button>
+      <button data-act="clone">Клонувати</button>
+      <button class="danger" data-act="del">Видалити</button>
+    </div>
+    <div class="sep"></div>
+    <div id="menuSub"></div>
+  `;
+
+  // Position
+  const wrap = $("mapWrap");
+  const r = wrap.getBoundingClientRect();
+  const ox = (ev && ev.originalEvent) ? ev.originalEvent.clientX : (r.left + 40);
+  const oy = (ev && ev.originalEvent) ? ev.originalEvent.clientY : (r.top + 80);
+  let x = ox - r.left + 10;
+  let y = oy - r.top + 10;
+
+  menu.style.display = "block";
+  // clamp to viewport
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  x = Math.max(10, Math.min(x, r.width - w - 10));
+  y = Math.max(10, Math.min(y, r.height - h - 10));
+  menu.style.left = x + "px";
+  menu.style.top  = y + "px";
+
+  // stop leaflet click-through
+  if(ev && ev.originalEvent){ ev.originalEvent.preventDefault?.(); ev.originalEvent.stopPropagation?.(); }
+
+  const sub = () => menu.querySelector("#menuSub");
+
+  const close = ()=>{ menu.style.display="none"; menu.innerHTML=""; };
+
+  // close if click on map background
+  setTimeout(()=>{
+    const onDoc = (e)=>{
+      if(!menu.contains(e.target)){ document.removeEventListener("mousedown", onDoc, true); close(); }
+    };
+    document.addEventListener("mousedown", onDoc, true);
+  }, 0);
+
+  menu.querySelectorAll("button[data-act]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const act = btn.getAttribute("data-act");
+
+      if(act==="speed"){
+        const cur = Number(t.speed ?? 0);
+        sub().innerHTML = `
+          <div class="mini">Поточна швидкість: <b>${cur}</b> км/год</div>
+          <div class="btnRow">
+            <button data-step="-50">-50</button>
+            <button data-step="-10">-10</button>
+            <button data-step="+10">+10</button>
+            <button data-step="+50">+50</button>
+            <button data-step="preset:150">150</button>
+            <button data-step="preset:250">250</button>
+          </div>
+        `;
+        sub().querySelectorAll("button[data-step]").forEach(b=>{
+          b.addEventListener("click", ()=>{
+            const v = b.getAttribute("data-step");
+            let ns = Number(t.speed ?? 0);
+            if(v.startsWith("preset:")) ns = Number(v.split(":")[1]);
+            else ns = Math.max(0, ns + Number(v));
+            t.speed = ns;
+            save(); renderList(); refreshTarget(t);
+            openTargetMenu(t, ev); // refresh menu
+          });
+        });
+        return;
+      }
+
+      if(act==="edit"){ close(); editTarget(t); return; }
+
+      if(act==="dir"){ close(); startSetDirection(t); toast("Клікни на мапі: новий напрямок"); return; }
+
+      if(act==="turn"){ close(); startAddTurnPoint(t); toast("Клікни на мапі: додати точку повороту"); return; }
+
+      if(act==="tp"){
+        close();
+        pendingAction = { type:"teleportClick", targetId:t.id };
+        toast("Клікни на мапі: телепорт цілі");
+        return;
+      }
+
+      if(act==="clone"){
+        close();
+        pendingAction = { type:"cloneClick", targetId:t.id };
+        toast("Клікни на мапі: де створити клон");
+        return;
+      }
+
+      if(act==="del"){
+        close();
+        deleteTarget(t, /*noConfirm*/ true);
+        return;
+      }
+    });
+  });
 }
+
 
 function editTarget(t){
   // load UI fields and apply
@@ -1982,6 +2109,7 @@ function startAddTurnPoint(t){
   alert("Клікни на мапі, щоб додати точку повороту.");
 }
 map.on("click", (e) => {
+  if(state.drawMode){ return; }
   if(state.addMode){
     // Two-click creation: 1) place target, 2) set direction
     if(state.addStep===0){
@@ -2015,6 +2143,27 @@ map.on("click", (e) => {
     t.points.push({ lat: e.latlng.lat, lng: e.latlng.lng });
     pendingAction = null;
     refreshTarget(t); save(); renderList();
+    return;
+  }
+  if(pendingAction.type==="teleportClick"){
+    t.lat = e.latlng.lat; t.lng = e.latlng.lng;
+    pendingAction = null;
+    const ls = layersById.get(String(t.id));
+    if(ls) ls.marker.setLatLng([t.lat,t.lng]);
+    refreshTarget(t); save(); renderList();
+    return;
+  }
+  if(pendingAction.type==="cloneClick"){
+    const src = t;
+    const c = JSON.parse(JSON.stringify(src));
+    c.id = uid();
+    c.createdAt = Date.now();
+    c.lat = e.latlng.lat;
+    c.lng = e.latlng.lng;
+    data.targets.push(c);
+    addTargetLayers(c);
+    pendingAction = null;
+    save(); renderList();
     return;
   }
 });
@@ -2069,8 +2218,8 @@ function cloneTarget(t){
   save(); renderList();
 }
 
-function deleteTarget(t){
-  if(!confirm("Видалити об'єкт?")) return;
+function deleteTarget(t, noConfirm){
+  if(!noConfirm){ if(!confirm("Видалити об'єкт?")) return; }
   const idx = data.targets.findIndex(x => x.id === t.id);
   if(idx>=0) data.targets.splice(idx,1);
   const ls = layersById.get(String(t.id));
@@ -2478,6 +2627,159 @@ $("btnAdd").addEventListener("click", ()=>{
   state.addFirstLatLng = null;
   $("btnAdd").classList.toggle("active", state.addMode);
   $("btnAdd").textContent = state.addMode ? "🟢 Клік 1: місце цілі" : "➕ Створити ціль";
+  $("btnTopAdd")?.classList.toggle("active", state.addMode);
+
+});
+
+// Top "+" button toggles add mode
+$("btnTopAdd")?.addEventListener("click", ()=>{
+  // disable drawing if enabled
+  if(state.drawMode){ setDrawMode(false); }
+  $("btnAdd").click();
+});
+
+// Panel toggle (show/hide left)
+$("btnTogglePanel")?.addEventListener("click", ()=>{
+  document.body.classList.toggle("panelHidden");
+});
+
+// ===== Drawing tool (click-to-draw) =====
+const drawColors = ["#ffd54a","#ff3bd4","#32d6ff","#49d17d","#ff4d4d","#ffffff"];
+let drawGroup = L.layerGroup().addTo(map);
+let drawArrows = L.layerGroup().addTo(map);
+let currentLine = null;
+let currentPts = [];
+let currentArrow = null;
+
+function setDrawColorByIndex(i){
+  state.drawColorIndex = (i+drawColors.length)%drawColors.length;
+  const col = drawColors[state.drawColorIndex];
+  const sw = $("drawColor");
+  if(sw){ sw.style.background = col; sw.style.boxShadow = "0 0 0 3px rgba(0,0,0,.08) inset"; }
+  if(currentLine){ currentLine.setStyle({color: col}); }
+}
+setDrawColorByIndex(state.drawColorIndex);
+
+function arrowIcon(angleDeg, color){
+  // simple triangle arrow (SVG) rotated by angleDeg
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24">
+    <polygon points="12,2 22,22 12,18 2,22" fill="${color}" />
+  </svg>`;
+  return L.divIcon({
+    className: "drawArrow",
+    html: `<div style="width:26px;height:26px;transform:rotate(${angleDeg}deg);transform-origin:50% 50%;">${svg}</div>`,
+    iconSize:[26,26],
+    iconAnchor:[13,13],
+  });
+}
+
+function updateArrow(){
+  if(!currentLine || currentPts.length < 2) return;
+  const a = currentPts[currentPts.length-2];
+  const b = currentPts[currentPts.length-1];
+  const br = bearing(a.lat,a.lng,b.lat,b.lng);
+  const angle = (br+360)%360;
+  const col = drawColors[state.drawColorIndex];
+  if(currentArrow){ drawArrows.removeLayer(currentArrow); currentArrow=null; }
+  currentArrow = L.marker(b, {icon: arrowIcon(angle, col), interactive:false});
+  currentArrow.addTo(drawArrows);
+}
+
+function finishDrawing(){
+  if(!currentLine){ return; }
+  updateArrow();
+  currentLine = null;
+  currentPts = [];
+  currentArrow = null;
+  $("drawHud").style.display = "none";
+}
+
+function undoDrawPoint(){
+  if(!currentLine || currentPts.length===0) return;
+  currentPts.pop();
+  currentLine.setLatLngs(currentPts);
+  if(currentPts.length<2){
+    if(currentArrow){ drawArrows.removeLayer(currentArrow); currentArrow=null; }
+  } else {
+    updateArrow();
+  }
+}
+
+function clearAllDrawings(){
+  drawGroup.clearLayers();
+  drawArrows.clearLayers();
+  currentLine = null;
+  currentPts = [];
+  currentArrow = null;
+}
+
+function setDrawMode(on){
+  state.drawMode = !!on;
+  $("btnTopDraw")?.classList.toggle("active", state.drawMode);
+  // HUD
+  if(state.drawMode){
+    $("drawHud").style.display = "flex";
+    setDrawColorByIndex(state.drawColorIndex);
+    // disable add mode if it was on
+    if(state.addMode){
+      state.addMode=false; state.addStep=0; state.addFirstLatLng=null;
+      $("btnAdd").classList.remove("active");
+      $("btnAdd").textContent = "➕ Створити ціль";
+      $("btnTopAdd")?.classList.remove("active");
+    }
+    map.doubleClickZoom.disable();
+  } else {
+    $("drawHud").style.display = "none";
+    finishDrawing();
+    map.doubleClickZoom.enable();
+  }
+}
+
+$("btnTopDraw")?.addEventListener("click", ()=>{
+  setDrawMode(!state.drawMode);
+});
+
+$("btnDrawFinish")?.addEventListener("click", ()=>{
+  finishDrawing();
+});
+
+$("btnDrawUndo")?.addEventListener("click", ()=>{
+  undoDrawPoint();
+});
+
+$("btnDrawClear")?.addEventListener("click", ()=>{
+  clearAllDrawings();
+});
+
+$("drawColor")?.addEventListener("click", ()=>{
+  setDrawColorByIndex(state.drawColorIndex+1);
+});
+
+// drawing click handler has priority
+map.on("click", (e)=>{
+  if(!state.drawMode) return;
+  // add point
+  currentPts.push(e.latlng);
+  const col = drawColors[state.drawColorIndex];
+  if(!currentLine){
+    currentLine = L.polyline(currentPts, {color: col, weight: 4, opacity: 0.95});
+    currentLine.addTo(drawGroup);
+  } else {
+    currentLine.setLatLngs(currentPts);
+  }
+  updateArrow();
+});
+
+map.on("dblclick", (e)=>{
+  if(!state.drawMode) return;
+  // finish current line on double click
+  finishDrawing();
+});
+
+// right click = undo last point (fast)
+map.on("contextmenu", (e)=>{
+  if(!state.drawMode) return;
+  undoDrawPoint();
 });
 $("btnCenter").addEventListener("click", ()=> map.setView([48.3794, 31.1656], 6));
 $("btnClear").addEventListener("click", ()=> { if(confirm("Видалити всі цілі?")) { data.targets=[]; save(); location.reload(); } });
